@@ -8,9 +8,9 @@ from pathlib import Path
 import argparse
 
 from models.gait_model import GaitModel
-from preprocessing.datasets.dataset_factory import create_dataset
+from preprocessing.datasets.dataset_factory import get_dataset
 from config import ModelConfig, TrainingConfig
-from train import GaitTrainer
+from train_simple import GaitTrainer
 
 
 def main():
@@ -49,8 +49,8 @@ def main():
     
     # Create datasets
     logging.info(f"Creating {args.dataset} dataset...")
-    train_dataset = create_dataset(args.dataset, split='train')
-    val_dataset = create_dataset(args.dataset, split='test')
+    train_dataset = get_dataset(args.dataset, split='train')
+    val_dataset = get_dataset(args.dataset, split='test')
     
     # Create data loaders
     train_loader = DataLoader(

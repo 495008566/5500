@@ -9,7 +9,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-from preprocessing.datasets.dataset_factory import create_dataset
+from preprocessing.datasets.dataset_factory import get_dataset
 from config import ModelConfig
 from evaluate import GaitEvaluator
 
@@ -45,7 +45,7 @@ def main():
     
     # Create dataset
     logging.info(f"Creating {args.dataset} test dataset...")
-    test_dataset = create_dataset(args.dataset, split='test')
+    test_dataset = get_dataset(args.dataset, split='test')
     
     # Create data loader
     test_loader = DataLoader(
@@ -129,9 +129,31 @@ def main():
     # Extract data for plotting
     components = list(results.keys())
     overall_acc = [results[c]['accuracy'] for c in components]
-    cross_45_acc = [np.mean([results[c]['cross_view_accuracy'].get(45, 0),
-                            results[c]['cross_view_accuracy'].get(54, 0)]) for c in components]
-    cross_90_acc = [results[c]['cross_view_accuracy'].get(90, 0) for c in components]
+    
+    # Handle cross-view metrics if available
+    cross_45_acc = []
+    cross_90_acc = []
+    
+    for c in components:
+        # Check if we have any cross-view metrics
+        cross_view_angles = [0, 18, 36, 45, 54, 72, 90, 108, 126, 144, 162, 180]
+        cross_view_metrics = {}
+        
+        for angle in cross_view_angles:
+            key = f'accuracy_{angle}deg'
+            if key in results[c]:
+                cross_view_metrics[angle] = results[c][key]
+        
+        # Calculate cross-45 and cross-90 accuracy
+        if 45 in cross_view_metrics or 54 in cross_view_metrics:
+            cross_45 = np.mean([cross_view_metrics.get(45, 0), cross_view_metrics.get(54, 0)])
+        else:
+            cross_45 = 0
+        
+        cross_90 = cross_view_metrics.get(90, 0)
+        
+        cross_45_acc.append(cross_45)
+        cross_90_acc.append(cross_90)
     
     # Plot ablation study results
     x = np.arange(len(components))
@@ -157,20 +179,52 @@ def main():
         
         # Calculate improvements relative to ablated versions
         baseline_acc = results['Full Model']['accuracy']
-        baseline_cross_45 = np.mean([results['Full Model']['cross_view_accuracy'].get(45, 0),
-                                    results['Full Model']['cross_view_accuracy'].get(54, 0)])
-        baseline_cross_90 = results['Full Model']['cross_view_accuracy'].get(90, 0)
-        baseline_time = results['Full Model']['processing_time']
+        
+        # Get cross-view metrics for baseline if available
+        cross_view_angles = [0, 18, 36, 45, 54, 72, 90, 108, 126, 144, 162, 180]
+        baseline_cross_metrics = {}
+        
+        for angle in cross_view_angles:
+            key = f'accuracy_{angle}deg'
+            if key in results['Full Model']:
+                baseline_cross_metrics[angle] = results['Full Model'][key]
+        
+        # Calculate baseline cross-45 and cross-90 accuracy
+        if 45 in baseline_cross_metrics or 54 in baseline_cross_metrics:
+            baseline_cross_45 = np.mean([baseline_cross_metrics.get(45, 0), baseline_cross_metrics.get(54, 0)])
+        else:
+            baseline_cross_45 = 0
+        
+        baseline_cross_90 = baseline_cross_metrics.get(90, 0) if 90 in baseline_cross_metrics else 0
+        
+        baseline_time = results['Full Model']['process_time']
         baseline_memory = results['Full Model']['memory_usage']
         
         # Write overall improvements
         f.write("Component Contributions:\n")
         for component in components[1:]:  # Skip the full model
             acc_diff = baseline_acc - results[component]['accuracy']
-            cross_45_diff = baseline_cross_45 - np.mean([results[component]['cross_view_accuracy'].get(45, 0),
-                                                        results[component]['cross_view_accuracy'].get(54, 0)])
-            cross_90_diff = baseline_cross_90 - results[component]['cross_view_accuracy'].get(90, 0)
-            time_diff = (results[component]['processing_time'] - baseline_time) / results[component]['processing_time'] * 100
+            
+            # Get cross-view metrics for this component if available
+            component_cross_metrics = {}
+            
+            for angle in cross_view_angles:
+                key = f'accuracy_{angle}deg'
+                if key in results[component]:
+                    component_cross_metrics[angle] = results[component][key]
+            
+            # Calculate component cross-45 and cross-90 accuracy
+            if 45 in component_cross_metrics or 54 in component_cross_metrics:
+                component_cross_45 = np.mean([component_cross_metrics.get(45, 0), component_cross_metrics.get(54, 0)])
+            else:
+                component_cross_45 = 0
+            
+            component_cross_90 = component_cross_metrics.get(90, 0) if 90 in component_cross_metrics else 0
+            
+            cross_45_diff = baseline_cross_45 - component_cross_45
+            cross_90_diff = baseline_cross_90 - component_cross_90
+            
+            time_diff = (results[component]['process_time'] - baseline_time) / results[component]['process_time'] * 100
             memory_diff = (results[component]['memory_usage'] - baseline_memory) / results[component]['memory_usage'] * 100
             
             f.write(f"\n{component}:\n")
@@ -185,11 +239,15 @@ def main():
         for component, metrics in results.items():
             f.write(f"\n{component}:\n")
             f.write(f"  Overall Accuracy: {metrics['accuracy']:.2f}%\n")
-            f.write(f"  Processing Time: {metrics['processing_time']:.4f} seconds per sample\n")
+            f.write(f"  Processing Time: {metrics['process_time']:.4f} seconds per sample\n")
             f.write(f"  Memory Usage: {metrics['memory_usage']:.2f} MB\n")
+            
+            # Write cross-view accuracy if available
             f.write("  Cross-View Accuracy:\n")
-            for angle, acc in metrics['cross_view_accuracy'].items():
-                f.write(f"    {angle}°: {acc:.2f}%\n")
+            for angle in cross_view_angles:
+                key = f'accuracy_{angle}deg'
+                if key in metrics:
+                    f.write(f"    {angle}°: {metrics[key]:.2f}%\n")
     
     logging.info(f"Ablation study completed on {args.dataset}!")
     logging.info(f"Results saved to {args.output_dir}")

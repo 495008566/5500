@@ -8,7 +8,7 @@ from pathlib import Path
 import argparse
 import matplotlib.pyplot as plt
 
-from preprocessing.datasets.dataset_factory import create_dataset
+from preprocessing.datasets.dataset_factory import get_dataset
 from config import ModelConfig
 from evaluate import GaitEvaluator
 
@@ -40,7 +40,7 @@ def main():
     
     # Create dataset
     logging.info(f"Creating {args.dataset} test dataset...")
-    test_dataset = create_dataset(args.dataset, split='test')
+    test_dataset = get_dataset(args.dataset, split='test')
     
     # Create data loader
     test_loader = DataLoader(
@@ -68,26 +68,43 @@ def main():
     plots_dir = Path(args.output_dir) / "plots"
     plots_dir.mkdir(exist_ok=True)
     
-    # Plot cross-view accuracy
-    angles = list(metrics['cross_view_accuracy'].keys())
-    accuracies = list(metrics['cross_view_accuracy'].values())
+    # Plot cross-view accuracy if available
+    # Check if we have any cross-view metrics
+    cross_view_angles = [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180]
+    cross_view_metrics = {}
     
-    plt.figure(figsize=(10, 6))
-    plt.plot(angles, accuracies, 'b-o')
-    plt.xlabel('View Angle (degrees)')
-    plt.ylabel('Rank-1 Accuracy (%)')
-    plt.title('Cross-View Gait Recognition Accuracy')
-    plt.grid(True)
-    plt.savefig(str(plots_dir / "cross_view_accuracy.png"))
+    for angle in cross_view_angles:
+        key = f'accuracy_{angle}deg'
+        if key in metrics:
+            cross_view_metrics[angle] = metrics[key]
+    
+    if cross_view_metrics:
+        angles = list(cross_view_metrics.keys())
+        accuracies = list(cross_view_metrics.values())
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(angles, accuracies, 'b-o')
+        plt.xlabel('View Angle (degrees)')
+        plt.ylabel('Rank-1 Accuracy (%)')
+        plt.title('Cross-View Gait Recognition Accuracy')
+        plt.grid(True)
+        plt.savefig(str(plots_dir / "cross_view_accuracy.png"))
+    else:
+        logging.warning("Cross-view accuracy data not available. Skipping cross-view plot.")
     
     # Save metrics to file
     with open(str(Path(args.output_dir) / "metrics.txt"), "w") as f:
         f.write(f"Overall Accuracy: {metrics['accuracy']:.2f}%\n")
-        f.write(f"Processing Time: {metrics['processing_time']:.4f} seconds per sample\n")
+        f.write(f"Processing Time: {metrics['process_time']:.4f} seconds per sample\n")
         f.write(f"Memory Usage: {metrics['memory_usage']:.2f} MB\n")
-        f.write("\nCross-View Accuracy:\n")
-        for angle, acc in metrics['cross_view_accuracy'].items():
-            f.write(f"  {angle}°: {acc:.2f}%\n")
+        
+        # Write cross-view accuracy if available
+        if cross_view_metrics:
+            f.write("\nCross-View Accuracy:\n")
+            for angle, acc in cross_view_metrics.items():
+                f.write(f"  {angle}°: {acc:.2f}%\n")
+        else:
+            f.write("\nCross-View Accuracy: Not available\n")
     
     logging.info(f"Evaluation completed on {args.dataset}!")
     logging.info(f"Results saved to {args.output_dir}")

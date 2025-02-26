@@ -23,27 +23,27 @@ class PoseEstimator(nn.Module):
         # Initialize HRNet backbone
         self.backbone = self._create_hrnet_backbone(pretrained)
         
-        # Keypoint head
+        # Keypoint head - adjusted for ResNet50 output (2048 channels)
         self.keypoint_head = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(2048, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, num_keypoints, kernel_size=1)
+            nn.Conv2d(512, num_keypoints, kernel_size=1)
         )
         
         # Initialize weights
         self._initialize_weights()
     
     def _create_hrnet_backbone(self, pretrained: bool) -> nn.Module:
-        """Create HRNet backbone"""
+        """Create backbone (using ResNet50 instead of HRNet)"""
         try:
-            # Use torchvision's implementation
-            backbone = models.hrnet_w32(pretrained=pretrained)
+            # Use ResNet50 as backbone since HRNet is not available
+            backbone = models.resnet50(pretrained=pretrained)
             # Remove classification head
             backbone = nn.Sequential(*list(backbone.children())[:-2])
             return backbone
         except Exception as e:
-            logging.error(f"Error creating HRNet backbone: {str(e)}")
+            logging.error(f"Error creating backbone: {str(e)}")
             raise
     
     def _initialize_weights(self):

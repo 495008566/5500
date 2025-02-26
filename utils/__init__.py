@@ -1,5 +1,4 @@
-from .person_detector import PersonDetector
-from .tracker import GaitTracker
-from .alignment import GaitAlignment
+# Import utility functions
+from .logging_utils import setup_logging
 
-__all__ = ['PersonDetector', 'GaitTracker', 'GaitAlignment']
+__all__ = ['setup_logging']

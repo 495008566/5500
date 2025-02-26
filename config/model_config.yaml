@@ -1,23 +1,22 @@
-# Model Configuration
+# Model configuration
 
-# Backbone options
-backbone: "resnet50"  # Options: resnet50, resnet101
-pretrained: true
+# Model architecture
+backbone: resnet50
 feature_dim: 256
+num_classes: 125  # Default for CASIA-B
 
-# Device settings
-device: "cuda"  # Options: cuda, cpu
-num_workers: 4
-batch_size: 32
+# Feature extraction
+use_feature_pyramid: true
+use_attention: true
+attention_type: se  # 'se' or 'cbam'
+
+# View transformation
+use_view_transform: true
+view_angles: [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180]
 
 # Training parameters
-num_classes: 150  # Number of identities
+batch_size: 16
+num_workers: 4
+num_epochs: 10
 learning_rate: 0.001
 weight_decay: 0.0005
-num_epochs: 100
-
-# Model components
-use_pose_estimation: true
-use_attention: true
-use_view_transform: true
-use_feature_pyramid: true

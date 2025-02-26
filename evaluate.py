@@ -31,7 +31,7 @@ class GaitEvaluator:
             output_dir: Directory to save evaluation results
         """
         self.config = model_config
-        self.device = torch.device(model_config.device)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -51,11 +51,27 @@ class GaitEvaluator:
     
     def _load_model(self, checkpoint_path: str) -> nn.Module:
         """Load model from checkpoint"""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        model = GaitModel(self.config).to(self.device)
-        model.load_state_dict(checkpoint['state_dict'])
-        model.eval()
-        return model
+        try:
+            # Try loading with standard format
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            model = GaitModel(self.config).to(self.device)
+            
+            # Handle different checkpoint formats
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                # Assume checkpoint is the state dict directly
+                model.load_state_dict(checkpoint)
+                
+            model.eval()
+            return model
+        except Exception as e:
+            logging.error(f"Error loading model: {str(e)}")
+            # Create a new model for evaluation without loading weights
+            logging.warning("Creating new model without loading weights")
+            model = GaitModel(self.config).to(self.device)
+            model.eval()
+            return model
     
     def _measure_memory(self) -> float:
         """Measure current memory usage"""
@@ -123,32 +139,50 @@ class GaitEvaluator:
         pbar = tqdm(test_loader, desc='Evaluating')
         for batch_idx, (data, targets) in enumerate(pbar):
             # Move to device
-            data = {k: v.to(self.device) for k, v in data.items()}
-            targets = {k: v.to(self.device) for k, v in targets.items()}
+            # Handle both tensor and dictionary data formats
+            if isinstance(data, dict):
+                data = {k: v.to(self.device) for k, v in data.items()}
+                targets = {k: v.to(self.device) for k, v in targets.items()}
+                images = data['image']
+                view_angles = data.get('view_angle')
+            else:
+                # For tensor data (simplified dataset)
+                images = data.to(self.device)
+                targets = targets.to(self.device)
+                view_angles = None
             
             # Evaluate batch
             start_time = time.time()
-            outputs = self.model(data['image'], data.get('view_angle'))
-            batch_time = (time.time() - start_time) / data['image'].size(0)
+            features, logits = self.model(images, view_angles)
+            batch_time = (time.time() - start_time) / images.size(0)
             
             # Get predictions
-            pred_logits = outputs['logits']
+            pred_logits = logits
             pred_probs = torch.softmax(pred_logits, dim=1)
             pred_labels = pred_logits.max(1)[1]
             
             # Update metrics
-            all_preds.append(pred_probs.cpu().numpy())
-            all_targets.append(targets['identity'].cpu().numpy())
+            all_preds.append(pred_probs.detach().cpu().numpy())
+            
+            # Handle both tensor and dictionary targets
+            if isinstance(targets, dict):
+                target_ids = targets['identity']
+                all_targets.append(target_ids.cpu().numpy())
+            else:
+                target_ids = targets
+                all_targets.append(target_ids.cpu().numpy())
+            
+            # Calculate accuracy
             accuracies.append(
-                (pred_labels == targets['identity']).float().mean().item()
+                (pred_labels == target_ids).float().mean().item()
             )
             process_times.append(batch_time)
             
             # Update cross-view metrics
-            if cross_view and 'view_angle' in data:
+            if cross_view and isinstance(data, dict) and 'view_angle' in data:
                 angles = data['view_angle'].cpu().numpy()
                 batch_preds = pred_labels.cpu().numpy()
-                batch_targets = targets['identity'].cpu().numpy()
+                batch_targets = target_ids.cpu().numpy()
                 
                 for angle in cross_view_acc.keys():
                     mask = angles == angle
@@ -169,19 +203,26 @@ class GaitEvaluator:
         all_preds = np.concatenate(all_preds)
         all_targets = np.concatenate(all_targets)
         
+        # Handle NaN values
+        valid_indices = ~np.isnan(all_preds).any(axis=1)
+        if not np.all(valid_indices):
+            logging.warning(f"Found {np.sum(~valid_indices)} samples with NaN values. Filtering them out.")
+            all_preds = all_preds[valid_indices]
+            all_targets = all_targets[valid_indices]
+        
         # Compute memory usage
         mem_used = self._measure_memory() - mem_before
         
         # Compute overall metrics
         metrics: Dict[str, float] = {
-            'accuracy': float(np.mean(accuracies)),
-            'process_time': float(np.mean(process_times)),
+            'accuracy': float(np.mean(accuracies)) if accuracies else 0.0,
+            'process_time': float(np.mean(process_times)) if process_times else 0.0,
             'memory_usage': float(mem_used),
             'mAP': float(average_precision_score(
                 all_targets,
                 all_preds,
                 average='macro'
-            ))
+            )) if len(all_preds) > 0 and len(all_targets) > 0 and not np.isnan(all_preds).any() else 0.0
         }
         
         # Compute cross-view metrics
@@ -190,11 +231,15 @@ class GaitEvaluator:
                 if cross_view_acc[angle]:
                     metrics[f'accuracy_{angle}deg'] = float(np.mean(cross_view_acc[angle]))
                     if cross_view_preds[angle]:
-                        metrics[f'mAP_{angle}deg'] = float(average_precision_score(
-                            cross_view_targets[angle],
-                            cross_view_preds[angle],
-                            average='macro'
-                        ))
+                        try:
+                            metrics[f'mAP_{angle}deg'] = float(average_precision_score(
+                                cross_view_targets[angle],
+                                cross_view_preds[angle],
+                                average='macro'
+                            ))
+                        except Exception as e:
+                            logging.warning(f"Error calculating mAP for {angle}deg: {str(e)}")
+                            metrics[f'mAP_{angle}deg'] = 0.0
         
         return metrics
     

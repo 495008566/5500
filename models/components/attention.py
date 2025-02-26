@@ -1,251 +1,132 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
 
 class SEModule(nn.Module):
-    """Squeeze-and-Excitation (SE) attention module"""
-    
-    def __init__(self,
-                 channels: int,
-                 reduction: int = 16):
-        """
-        Initialize SE module
-        
-        Args:
-            channels: Number of input channels
-            reduction: Channel reduction ratio
-        """
+    """Squeeze-and-Excitation (SE) block implementation."""
+    def __init__(self, channels, reduction=16):
         super(SEModule, self).__init__()
-        
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
-        )
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass"""
-        b, c, _, _ = x.size()
-        
-        # Global average pooling
-        y = self.avg_pool(x).view(b, c)
-        
-        # Channel attention
-        y = self.fc(y).view(b, c, 1, 1)
-        
-        # Scale the input
-        return x * y.expand_as(x)
+        self.fc1 = nn.Conv2d(channels, channels // reduction, kernel_size=1, padding=0)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Conv2d(channels // reduction, channels, kernel_size=1, padding=0)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        module_input = x
+        x = self.avg_pool(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.sigmoid(x)
+        return module_input * x
 
 class CBAM(nn.Module):
-    """Convolutional Block Attention Module"""
-    
-    def __init__(self,
-                 channels: int,
-                 reduction: int = 16,
-                 kernel_size: int = 7):
-        """
-        Initialize CBAM
-        
-        Args:
-            channels: Number of input channels
-            reduction: Channel reduction ratio
-            kernel_size: Kernel size for spatial attention
-        """
+    """Convolutional Block Attention Module."""
+    def __init__(self, channels, reduction=16):
         super(CBAM, self).__init__()
-        
         # Channel attention
         self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(channels, channels // reduction, 1, bias=False),
-            nn.BatchNorm2d(channels // reduction),
             nn.ReLU(inplace=True),
             nn.Conv2d(channels // reduction, channels, 1, bias=False),
-            nn.BatchNorm2d(channels),
-            nn.Sigmoid()
         )
-        
         # Spatial attention
         self.spatial_gate = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size//2),
-            nn.BatchNorm2d(1),
+            nn.Conv2d(2, 1, kernel_size=7, stride=1, padding=3, bias=False),
             nn.Sigmoid()
         )
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass"""
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
         # Channel attention
-        channel_att = self.channel_gate(F.adaptive_avg_pool2d(x, 1))
+        channel_att = self.channel_gate(x)
+        channel_att = self.sigmoid(channel_att)
         x = x * channel_att
         
         # Spatial attention
-        max_pool = torch.max(x, dim=1, keepdim=True)[0]
-        avg_pool = torch.mean(x, dim=1, keepdim=True)
-        spatial_att = self.spatial_gate(torch.cat([max_pool, avg_pool], dim=1))
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        spatial_input = torch.cat([avg_out, max_out], dim=1)
+        spatial_att = self.spatial_gate(spatial_input)
+        x = x * spatial_att
         
-        return x * spatial_att
+        return x
 
 class ViewTransformationNetwork(nn.Module):
-    """Network for transforming features across different views"""
-    
-    def __init__(self,
-                 input_dim: int,
-                 hidden_dim: int = 512,
-                 num_views: int = 11):
-        """
-        Initialize view transformation network
-        
-        Args:
-            input_dim: Input feature dimension
-            hidden_dim: Hidden layer dimension
-            num_views: Number of view angles
-        """
+    """Network for transforming features across different view angles."""
+    def __init__(self, feature_dim, view_angles):
         super(ViewTransformationNetwork, self).__init__()
+        self.feature_dim = feature_dim
+        self.view_angles = view_angles
+        self.num_views = len(view_angles)
         
-        self.num_views = num_views
-        
-        # View embedding
-        self.view_embedding = nn.Embedding(num_views, hidden_dim)
-        
-        # Feature transformation
-        self.transform = nn.Sequential(
-            nn.Linear(input_dim + hidden_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, input_dim)
-        )
-        
-        # Initialize weights
-        self._initialize_weights()
+        # Create transformation matrices for each view pair
+        self.transforms = nn.ModuleDict()
+        for i, src_view in enumerate(view_angles):
+            for j, tgt_view in enumerate(view_angles):
+                if i != j:
+                    key = f"{src_view}_{tgt_view}"
+                    self.transforms[key] = nn.Linear(feature_dim, feature_dim)
     
-    def _initialize_weights(self):
-        """Initialize model weights"""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-    
-    def forward(self,
-                features: torch.Tensor,
-                source_view: torch.Tensor,
-                target_view: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, features, src_view, tgt_view=None):
         """
-        Transform features from source view to target view
-        
-        Args:
-            features: Input features
-            source_view: Source view indices
-            target_view: Target view indices (if None, transform to canonical view)
-            
-        Returns:
-            Transformed features
+        Transform features from source view to target view.
+        If tgt_view is None, transform to all views.
         """
-        batch_size = features.size(0)
-        
-        # Get source view embedding
-        source_embed = self.view_embedding(source_view)
-        
-        # If target view not specified, use canonical view (middle view)
-        if target_view is None:
-            target_view = torch.ones_like(source_view) * (self.num_views // 2)
-        
-        # Get target view embedding
-        target_embed = self.view_embedding(target_view)
-        
-        # Compute view difference embedding
-        view_diff = target_embed - source_embed
-        
-        # Concatenate features with view difference
-        combined = torch.cat([features, view_diff], dim=1)
-        
-        # Transform features
-        transformed = self.transform(combined)
-        
-        return transformed
+        if tgt_view is None:
+            # Transform to all views
+            transformed_features = []
+            for view in self.view_angles:
+                if view != src_view:
+                    key = f"{src_view}_{view}"
+                    transformed = self.transforms[key](features)
+                    transformed_features.append(transformed)
+                else:
+                    transformed_features.append(features)
+            return torch.stack(transformed_features, dim=1)
+        else:
+            # Transform to specific target view
+            if src_view == tgt_view:
+                return features
+            key = f"{src_view}_{tgt_view}"
+            return self.transforms[key](features)
 
 class DynamicWeightModule(nn.Module):
-    """Dynamic weight module for body region feature fusion"""
-    
-    def __init__(self,
-                 feature_dim: int,
-                 num_regions: int = 3):
-        """
-        Initialize dynamic weight module
-        
-        Args:
-            feature_dim: Feature dimension
-            num_regions: Number of body regions
-        """
+    """Module for dynamically weighting features from different body parts."""
+    def __init__(self, feature_dim):
         super(DynamicWeightModule, self).__init__()
+        self.feature_dim = feature_dim
         
-        self.attention = nn.Sequential(
-            nn.Linear(feature_dim * num_regions, feature_dim),
+        # Weight prediction network
+        self.weight_net = nn.Sequential(
+            nn.Linear(feature_dim * 3, 128),
             nn.ReLU(inplace=True),
-            nn.Linear(feature_dim, num_regions),
+            nn.Linear(128, 3),
             nn.Softmax(dim=1)
         )
     
-    def forward(self,
-                features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, upper_features, lower_features, full_features):
         """
-        Compute dynamic weights for feature fusion
-        
-        Args:
-            features: Input features (batch_size, num_regions, feature_dim)
-            
-        Returns:
-            Tuple of:
-            - Fused features
-            - Attention weights
+        Dynamically weight features from upper body, lower body, and full body.
         """
-        batch_size, num_regions, feature_dim = features.size()
+        # Concatenate features
+        concat_features = torch.cat([
+            upper_features, lower_features, full_features
+        ], dim=1)
         
-        # Flatten features
-        flat_features = features.view(batch_size, -1)
-        
-        # Compute attention weights
-        weights = self.attention(flat_features)
+        # Predict weights
+        weights = self.weight_net(concat_features)
         
         # Apply weights
-        weighted_features = features * weights.unsqueeze(-1)
+        weighted_features = (
+            weights[:, 0:1] * upper_features +
+            weights[:, 1:2] * lower_features +
+            weights[:, 2:3] * full_features
+        )
         
-        # Sum weighted features
-        fused = weighted_features.sum(dim=1)
-        
-        return fused, weights
-
-if __name__ == "__main__":
-    # Test attention modules
-    x = torch.randn(4, 64, 32, 16)
-    
-    # Test SE module
-    se = SEModule(64)
-    y_se = se(x)
-    print(f"SE output shape: {y_se.shape}")
-    
-    # Test CBAM
-    cbam = CBAM(64)
-    y_cbam = cbam(x)
-    print(f"CBAM output shape: {y_cbam.shape}")
-    
-    # Test view transformation
-    features = torch.randn(4, 256)
-    source_view = torch.randint(0, 11, (4,))
-    vtn = ViewTransformationNetwork(256)
-    y_vtn = vtn(features, source_view)
-    print(f"VTN output shape: {y_vtn.shape}")
-    
-    # Test dynamic weights
-    region_features = torch.randn(4, 3, 256)  # 3 regions
-    weight_module = DynamicWeightModule(256)
-    fused, weights = weight_module(region_features)
-    print(f"Fused features shape: {fused.shape}")
-    print(f"Attention weights shape: {weights.shape}")
+        return weighted_features, weights
