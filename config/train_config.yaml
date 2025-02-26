@@ -1,0 +1,27 @@
+# Training Configuration
+
+# Data settings
+data_dir: "data/processed"
+train_ratio: 0.8
+val_ratio: 0.1
+test_ratio: 0.1
+
+# Optimizer settings
+optimizer: "adam"  # Options: adam, sgd
+scheduler: "cosine"  # Options: cosine, step
+
+# Loss weights
+lambda_ce: 1.0  # Cross-entropy loss weight
+lambda_triplet: 1.0  # Triplet loss weight
+
+# Training schedule
+val_frequency: 1  # Validate every N epochs
+save_frequency: 5  # Save checkpoint every N epochs
+
+# Data augmentation
+augmentation:
+  random_flip: true
+  random_crop: true
+  random_rotation: true
+  color_jitter: true
+  random_erasing: true

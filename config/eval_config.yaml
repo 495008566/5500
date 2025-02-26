@@ -1,0 +1,25 @@
+# Evaluation Configuration
+
+# Data settings
+data_dir: "data/processed"
+test_set: "test"  # Options: test, val
+
+# Evaluation metrics
+metrics:
+  - "accuracy"
+  - "precision"
+  - "recall"
+  - "f1"
+  - "mAP"
+
+# Cross-view evaluation
+cross_view: true
+view_angles: [0, 45, 90, 180]
+
+# Ablation study
+ablation:
+  enabled: true
+  components:
+    - "view_transform"
+    - "attention_module"
+    - "feature_pyramid"
