@@ -1,5 +1,5 @@
 name: OUMVLP
-path: data/OUMVLP
+path: data/oumvlp-pkl
 views: [0, 15, 30, 45, 60, 75, 90, 180, 195, 210, 225, 240, 255, 270]
 train_subjects: [1-5153]  # 50% of subjects for training
 test_subjects: [5154-10307]  # 50% of subjects for testing
