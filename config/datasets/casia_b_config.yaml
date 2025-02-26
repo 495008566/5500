@@ -1,0 +1,9 @@
+name: CASIA-B
+path: data/CASIA-B
+views: [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180]
+conditions: 
+  - nm  # normal walking
+  - cl  # wearing coat
+  - bg  # carrying bag
+train_subjects: [1-74]  # subject IDs for training
+test_subjects: [75-124]  # subject IDs for testing

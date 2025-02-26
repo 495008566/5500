@@ -1,0 +1,4 @@
+name: Gait3D
+path: data/Gait3D
+train_subjects: [1-3200]  # 80% of subjects for training
+test_subjects: [3201-4000]  # 20% of subjects for testing
