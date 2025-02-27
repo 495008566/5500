@@ -1,29 +1,24 @@
-# 跨视角步态识别实验结果可视化
+# Experiment Result Visualizations
 
-本目录包含跨视角步态识别系统的实验结果可视化，用于论文和演示。
+This directory contains visualization charts for the cross-view gait recognition system, suitable for papers and presentations.
 
-## 文件说明
+## File Descriptions
 
-1. `rank1_accuracy_table.png` - 不同方法在各视角下的Rank-1准确率表格
-2. `ablation_study_results.png` - 消融实验结果，展示各组件对模型性能的贡献
-3. `training_progress.png` - 模型训练过程中的准确率和损失变化
-4. `view_angle_accuracy.png` - 不同视角下的识别准确率曲线图
-5. `terminal_output.png` - 训练过程中的终端输出示例
-6. `confusion_matrix.png` - 模型预测的混淆矩阵
-7. `model_architecture.png` - 模型架构图
+1. **rank1_accuracy_table.png**: Table of Rank-1 recognition accuracy across different view angles for various methods
+2. **ablation_study_results.png**: Ablation study results showing the contribution of each component to model performance
+3. **training_progress.png**: Accuracy and loss curves during the training process
+4. **view_angle_accuracy.png**: Recognition accuracy curves across different view angles
+5. **terminal_output.png**: Example of terminal output during training
+6. **confusion_matrix.png**: Confusion matrix of classification results
+7. **model_architecture.png**: Architecture diagram of the cross-view gait recognition model
+8. **model_architecture_chinese.png**: Architecture diagram with Chinese labels
+9. **ablation_study_results_chinese.png**: Ablation study results with Chinese labels
 
-## 使用说明
+## Usage
 
-这些可视化图表可直接用于:
-- 学术论文的实验结果部分
-- 项目演示和答辩PPT
-- 技术报告和文档
+These charts can be directly used for:
+- Academic papers
+- Presentation slides
+- Technical reports
 
-## 数据来源
-
-这些可视化基于CASIA-B数据集上的实验结果，包括:
-- 普通行走条件 (NM)
-- 携带包包条件 (BG)
-- 穿着外套条件 (CL)
-
-在11个不同视角 (0°, 18°, 36°, 54°, 72°, 90°, 108°, 126°, 144°, 162°, 180°) 下的测试结果。
+All charts are high resolution (300 DPI), suitable for printing and publication.
