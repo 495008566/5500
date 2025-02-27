@@ -1,42 +1,172 @@
-import torch
-from torch.utils.data import DataLoader
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 import logging
-from pathlib import Path
+import time
+import os
+import numpy as np
 import argparse
+import yaml
+from pathlib import Path
+from tqdm import tqdm
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
 
+# Import custom modules
+from models.gait_model import GaitModel
 from preprocessing.datasets.dataset_factory import get_dataset
-from config import ModelConfig
-from evaluate import GaitEvaluator
+from utils.logging_utils import setup_logging
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Evaluate gait recognition model on real datasets')
+    parser.add_argument('--dataset', type=str, default='casia_b',
+                        help='Dataset name (casia_b, oumvlp, gait3d)')
+    parser.add_argument('--config_dir', type=str, default='config',
+                        help='Directory containing configuration files')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
+                        help='Directory containing model checkpoints')
+    parser.add_argument('--results_dir', type=str, default='results',
+                        help='Directory to save evaluation results')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Batch size for evaluation')
+    parser.add_argument('--checkpoint', type=str, default='best_model.pth',
+                        help='Checkpoint file to load')
+    return parser.parse_args()
+
+def load_config(config_path):
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+class Config:
+    def __init__(self, config_dict):
+        for key, value in config_dict.items():
+            if isinstance(value, dict):
+                setattr(self, key, Config(value))
+            else:
+                setattr(self, key, value)
+
+def evaluate_model(model, test_loader, criterion, device):
+    """Evaluate the model on the test set"""
+    model.eval()
+    test_loss = 0.0
+    test_acc = 0.0
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for frames, labels in tqdm(test_loader, desc="Evaluating"):
+            # Handle sequence data if needed
+            if len(frames.shape) == 5:
+                batch_size, seq_len, channels, height, width = frames.shape
+                # Use multiple frames for evaluation
+                frame_indices = [0, seq_len//2, seq_len-1]  # Use first, middle, and last frame
+                
+                # Process each selected frame
+                batch_logits = []
+                
+                for idx in frame_indices:
+                    frame = frames[:, idx, :, :, :]
+                    
+                    if device == 'cuda':
+                        frame = frame.cuda()
+                        labels = labels.cuda()
+                    
+                    # Forward pass
+                    features, logits = model(frame)
+                    batch_logits.append(logits)
+                
+                # Average logits across frames
+                logits = torch.mean(torch.stack(batch_logits), dim=0)
+            else:
+                # Single frame input
+                if device == 'cuda':
+                    frames = frames.cuda()
+                    labels = labels.cuda()
+                
+                # Forward pass
+                features, logits = model(frames)
+            
+            # Calculate loss
+            loss = criterion(logits, labels)
+            
+            # Calculate accuracy
+            _, preds = torch.max(logits, 1)
+            
+            # Update statistics
+            test_loss += loss.item() * labels.size(0)
+            test_acc += torch.sum(preds == labels).item()
+            
+            # Store predictions and labels for further analysis
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    # Calculate final statistics
+    test_loss /= len(test_loader.dataset)
+    test_acc /= len(test_loader.dataset)
+    
+    return test_loss, test_acc, all_preds, all_labels
+
+def plot_confusion_matrix(y_true, y_pred, classes, output_path):
+    """Plot confusion matrix"""
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=False, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+    plt.title('Confusion Matrix')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
+def plot_accuracy_by_view(dataset, all_preds, all_labels, output_path):
+    """Plot accuracy by view angle"""
+    if not hasattr(dataset, 'view_angles'):
+        return
+    
+    view_angles = np.array(dataset.view_angles)
+    unique_views = np.unique(view_angles)
+    view_acc = []
+    
+    for view in unique_views:
+        view_indices = np.where(view_angles == view)[0]
+        view_preds = [all_preds[i] for i in view_indices]
+        view_labels = [all_labels[i] for i in view_indices]
+        view_acc.append(np.mean(np.array(view_preds) == np.array(view_labels)))
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(unique_views, view_acc)
+    plt.title('Accuracy by View Angle')
+    plt.xlabel('View Angle (degrees)')
+    plt.ylabel('Accuracy')
+    plt.ylim(0, 1)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
 
 def main():
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Evaluate gait recognition model with real datasets')
-    parser.add_argument('--dataset', type=str, default='casia_b', choices=['casia_b', 'oumvlp', 'gait3d'],
-                        help='Dataset to use for evaluation')
-    parser.add_argument('--checkpoint_path', type=str, required=True,
-                        help='Path to model checkpoint')
-    parser.add_argument('--output_dir', type=str, default='results',
-                        help='Directory to save evaluation results')
-    args = parser.parse_args()
+    args = parse_args()
+    
+    # Create directories
+    results_dir = os.path.join(args.results_dir, args.dataset)
+    os.makedirs(results_dir, exist_ok=True)
     
     # Setup logging
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(f"{args.output_dir}/evaluation_{args.dataset}.log"),
-            logging.StreamHandler()
-        ]
-    )
+    setup_logging(results_dir)
     
     # Load configurations
-    model_config = ModelConfig()
+    model_config_path = os.path.join(args.config_dir, 'model_config.yaml')
+    
+    model_config = load_config(model_config_path)
+    
+    # Convert configs to objects for easier access
+    model_config = Config(model_config)
     
     # Create dataset
     logging.info(f"Creating {args.dataset} test dataset...")
@@ -44,71 +174,67 @@ def main():
     
     # Create data loader
     test_loader = DataLoader(
-        dataset=test_dataset,
-        batch_size=model_config.batch_size,
+        test_dataset,
+        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=model_config.num_workers
+        num_workers=4,
+        pin_memory=True
     )
     
-    # Create evaluator
-    evaluator = GaitEvaluator(
-        model_config=model_config,
-        checkpoint_path=args.checkpoint_path,
-        output_dir=args.output_dir
-    )
+    # Create model
+    model = GaitModel(model_config)
+    
+    # Load checkpoint
+    checkpoint_path = os.path.join(args.checkpoint_dir, args.dataset, args.checkpoint)
+    logging.info(f"Loading checkpoint from {checkpoint_path}...")
+    
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+        logging.info("Checkpoint loaded successfully")
+    else:
+        logging.error(f"Checkpoint not found at {checkpoint_path}")
+        return
+    
+    # Set device
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cuda':
+        model = model.cuda()
+    
+    # Create loss function
+    criterion = nn.CrossEntropyLoss()
     
     # Evaluate model
-    logging.info(f"Starting evaluation on {args.dataset}...")
-    metrics = evaluator.evaluate(test_loader, cross_view=True)
+    logging.info("Evaluating model...")
+    test_loss, test_acc, all_preds, all_labels = evaluate_model(model, test_loader, criterion, device)
     
-    # Generate visualizations
-    logging.info("Generating visualizations...")
+    logging.info(f"Test Loss: {test_loss:.4f}")
+    logging.info(f"Test Accuracy: {test_acc:.4f}")
     
-    # Create directory for plots
-    plots_dir = Path(args.output_dir) / "plots"
-    plots_dir.mkdir(exist_ok=True)
+    # Generate classification report
+    class_names = [str(i) for i in range(model_config.num_classes)]
+    report = classification_report(all_labels, all_preds, target_names=class_names)
+    logging.info(f"Classification Report:\n{report}")
     
-    # Plot cross-view accuracy if available
-    # Check if we have any cross-view metrics
-    cross_view_angles = [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180]
-    cross_view_metrics = {}
+    # Save classification report to file
+    report_path = os.path.join(results_dir, 'classification_report.txt')
+    with open(report_path, 'w') as f:
+        f.write(f"Test Loss: {test_loss:.4f}\n")
+        f.write(f"Test Accuracy: {test_acc:.4f}\n\n")
+        f.write(f"Classification Report:\n{report}")
     
-    for angle in cross_view_angles:
-        key = f'accuracy_{angle}deg'
-        if key in metrics:
-            cross_view_metrics[angle] = metrics[key]
+    # Plot confusion matrix
+    cm_path = os.path.join(results_dir, 'confusion_matrix.png')
+    plot_confusion_matrix(all_labels, all_preds, class_names, cm_path)
     
-    if cross_view_metrics:
-        angles = list(cross_view_metrics.keys())
-        accuracies = list(cross_view_metrics.values())
-        
-        plt.figure(figsize=(10, 6))
-        plt.plot(angles, accuracies, 'b-o')
-        plt.xlabel('View Angle (degrees)')
-        plt.ylabel('Rank-1 Accuracy (%)')
-        plt.title('Cross-View Gait Recognition Accuracy')
-        plt.grid(True)
-        plt.savefig(str(plots_dir / "cross_view_accuracy.png"))
-    else:
-        logging.warning("Cross-view accuracy data not available. Skipping cross-view plot.")
+    # Plot accuracy by view angle
+    view_acc_path = os.path.join(results_dir, 'accuracy_by_view.png')
+    plot_accuracy_by_view(test_dataset, all_preds, all_labels, view_acc_path)
     
-    # Save metrics to file
-    with open(str(Path(args.output_dir) / "metrics.txt"), "w") as f:
-        f.write(f"Overall Accuracy: {metrics['accuracy']:.2f}%\n")
-        f.write(f"Processing Time: {metrics['process_time']:.4f} seconds per sample\n")
-        f.write(f"Memory Usage: {metrics['memory_usage']:.2f} MB\n")
-        
-        # Write cross-view accuracy if available
-        if cross_view_metrics:
-            f.write("\nCross-View Accuracy:\n")
-            for angle, acc in cross_view_metrics.items():
-                f.write(f"  {angle}°: {acc:.2f}%\n")
-        else:
-            f.write("\nCross-View Accuracy: Not available\n")
-    
-    logging.info(f"Evaluation completed on {args.dataset}!")
-    logging.info(f"Results saved to {args.output_dir}")
-
+    logging.info(f"Evaluation results saved to {results_dir}")
 
 if __name__ == "__main__":
     main()

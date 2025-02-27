@@ -1,153 +1,89 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision.models as models
-from typing import Dict, List, Tuple, Optional
-from .components.attention import CBAM, ViewTransformationNetwork, DynamicWeightModule
-from .components.feature_pyramid import GaitFeatureExtractor
-from .components.pose_estimator import PoseEstimator
+import logging
 
 class GaitModel(nn.Module):
-    """Complete gait recognition model with attention and view transformation"""
+    """
+    Simplified gait recognition model for handling sequences
+    """
     
     def __init__(self, config):
         super(GaitModel, self).__init__()
         self.config = config
         
-        # Create backbone network
-        self.backbone = self._create_backbone(config.backbone)
-        backbone_channels = [256, 512, 1024, 2048]  # ResNet channels
+        # Set up backbone network
+        if config.backbone == 'resnet18':
+            self.backbone = models.resnet18(pretrained=True)
+            feature_dim = 512
+        elif config.backbone == 'resnet34':
+            self.backbone = models.resnet34(pretrained=True)
+            feature_dim = 512
+        elif config.backbone == 'resnet50':
+            self.backbone = models.resnet50(pretrained=True)
+            feature_dim = 2048
+        elif config.backbone == 'resnet101':
+            self.backbone = models.resnet101(pretrained=True)
+            feature_dim = 2048
+        elif config.backbone == 'resnet152':
+            self.backbone = models.resnet152(pretrained=True)
+            feature_dim = 2048
+        else:
+            raise ValueError(f"Unsupported backbone: {config.backbone}")
         
-        # Pose estimation
-        self.pose_estimator = PoseEstimator(pretrained=True)
+        # Remove the final fully connected layer
+        self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
         
-        # Feature extraction
-        self.feature_extractor = GaitFeatureExtractor(backbone_channels)
+        # Global average pooling
+        self.gap = nn.AdaptiveAvgPool2d(1)
         
-        # View transformation
-        self.view_transform = ViewTransformationNetwork(config.feature_dim, config.view_angles)
-        
-        # Attention modules
-        self.cbam1 = CBAM(256)
-        self.cbam2 = CBAM(512)
-        self.cbam3 = CBAM(1024)
-        self.cbam4 = CBAM(2048)
-        
-        # Dynamic weight module
-        self.weight_module = DynamicWeightModule(config.feature_dim)
-        
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.Linear(config.feature_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(512, config.num_classes)
+        # Feature dimension reduction
+        self.feature_reduction = nn.Sequential(
+            nn.Linear(feature_dim, config.feature_dim),
+            nn.BatchNorm1d(config.feature_dim),
+            nn.ReLU(inplace=True)
         )
         
-        # Initialize weights
-        self._initialize_weights()
+        # Fully connected layers
+        self.fc = nn.Linear(config.feature_dim, config.num_classes)
         
-        # Optimize for CPU if needed
-        if torch.cuda.is_available() == False:
-            self._optimize_for_cpu()
+        logging.info(f"Created GaitModel with backbone {config.backbone}")
     
-    def _create_backbone(self, backbone: str) -> nn.Module:
-        """Create backbone network with skip connections"""
-        if backbone == 'resnet50':
-            model = models.resnet50(pretrained=True)
-        elif backbone == 'resnet101':
-            model = models.resnet101(pretrained=True)
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
-        
-        # Remove classification head
-        return nn.Sequential(*list(model.children())[:-2])
-    
-    def forward(self,
-                x: torch.Tensor,
-                view_angles: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(self, x):
         """
-        Forward pass with skip connections and attention
+        Forward pass of the model
         
         Args:
-            x: Input tensor
-            view_angles: View angle indices (optional)
-            
+            x: Input tensor of shape (batch_size, sequence_length, channels, height, width)
+        
         Returns:
-            Dict containing model outputs
+            features: Feature tensor of shape (batch_size, feature_dim)
+            logits: Logits tensor of shape (batch_size, num_classes)
         """
-        batch_size = x.size(0)
+        batch_size, sequence_length, channels, height, width = x.shape
         
-        # Extract backbone features with skip connections
-        features = []
-        x1 = self.backbone[0:5](x)  # conv1 + bn1 + relu + maxpool + layer1
-        x1 = self.cbam1(x1)
-        features.append(x1)
+        # Process each frame in the sequence
+        frame_features = []
+        for i in range(sequence_length):
+            frame = x[:, i, :, :, :]  # (batch_size, channels, height, width)
+            
+            # Extract features using backbone
+            features = self.backbone(frame)
+            features = features.view(batch_size, -1)
+            
+            # Apply feature reduction
+            features = self.feature_reduction(features)
+            
+            frame_features.append(features)
         
-        x2 = self.backbone[5](x1)  # layer2
-        x2 = self.cbam2(x2)
-        features.append(x2)
-        
-        x3 = self.backbone[6](x2)  # layer3
-        x3 = self.cbam3(x3)
-        features.append(x3)
-        
-        x4 = self.backbone[7](x3)  # layer4
-        x4 = self.cbam4(x4)
-        features.append(x4)
-        
-        # Pose estimation
-        pose_outputs = self.pose_estimator(x)
-        keypoints, confidences = self.pose_estimator.extract_keypoints(
-            pose_outputs['heatmaps']
-        )
-        
-        # For simplified training, create dummy body regions
-        # In a real implementation, we would extract keypoints and segment body regions
-        body_regions = {
-            'upper': None,  # These will be ignored in the simplified feature extractor
-            'lower': None,
-            'full': None
-        }
-        
-        # Extract features
-        gait_features = self.feature_extractor(features, body_regions)
-        
-        # Apply view transformation if angles provided
-        if view_angles is not None:
-            gait_features['fused'] = self.view_transform(
-                gait_features['fused'],
-                view_angles
-            )
-        
-        # For simplified training, use the fused features directly
-        # In a real implementation, we would apply dynamic weighting to different body regions
-        weighted_features = gait_features['fused']
-        attention_weights = torch.ones(batch_size, 3) / 3.0  # Equal weights for visualization
+        # Aggregate features across frames (temporal pooling)
+        features = torch.stack(frame_features, dim=1)  # (batch_size, sequence_length, feature_dim)
+        features = torch.mean(features, dim=1)  # (batch_size, feature_dim)
         
         # Classification
-        logits = self.classifier(weighted_features)
+        logits = self.fc(features)
         
-        # For simplified training, return features and logits directly
-        # In a real implementation, we would return a dictionary with all outputs
-        return weighted_features, logits
-    
-    def _initialize_weights(self):
-        """Initialize model weights"""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-    
-    def _optimize_for_cpu(self):
-        """Optimize model for CPU inference"""
-        torch.set_num_threads(torch.get_num_threads())
-        self.to(memory_format=torch.channels_last)
+        return features, logits

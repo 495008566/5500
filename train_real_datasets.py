@@ -24,7 +24,7 @@ def main():
                         help='Directory to save logs')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for training')
-    parser.add_argument('--num_epochs', type=int, default=100,
+    parser.add_argument('--num_epochs', type=int, default=200,
                         help='Number of epochs for training')
     args = parser.parse_args()
     

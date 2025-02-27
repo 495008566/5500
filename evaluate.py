@@ -59,6 +59,8 @@ class GaitEvaluator:
             # Handle different checkpoint formats
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['state_dict'])
+            elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 # Assume checkpoint is the state dict directly
                 model.load_state_dict(checkpoint)
@@ -153,7 +155,7 @@ class GaitEvaluator:
             
             # Evaluate batch
             start_time = time.time()
-            features, logits = self.model(images, view_angles)
+            features, logits = self.model(images)
             batch_time = (time.time() - start_time) / images.size(0)
             
             # Get predictions

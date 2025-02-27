@@ -1,27 +1,35 @@
-# Training Configuration
+# Training configuration for gait recognition
 
-# Data settings
-data_dir: "data/processed"
-train_ratio: 0.8
-val_ratio: 0.1
-test_ratio: 0.1
+# Dataset settings
+train_split: train
+val_split: test
+sequence_length: 30
 
 # Optimizer settings
-optimizer: "adam"  # Options: adam, sgd
-scheduler: "cosine"  # Options: cosine, step
+optimizer: "adamw"  # Using AdamW for better regularization
+learning_rate: 0.0001
+weight_decay: 0.001
+momentum: 0.9  # Only used for SGD
+scheduler: "cosine_warmup"  # Using cosine annealing with warmup
+warmup_epochs: 5
+lr_step_size: 30  # Only used for step scheduler
+lr_gamma: 0.1  # Only used for step scheduler
 
 # Loss weights
 lambda_ce: 1.0  # Cross-entropy loss weight
-lambda_triplet: 1.0  # Triplet loss weight
+lambda_triplet: 0.5  # Triplet loss weight
+lambda_center: 0.1  # Center loss weight
+triplet_margin: 0.3
 
 # Training schedule
-val_frequency: 1  # Validate every N epochs
-save_frequency: 5  # Save checkpoint every N epochs
+val_frequency: 1  # Validate every epoch
+save_frequency: 5  # Save checkpoint every 5 epochs
 
 # Data augmentation
+use_augmentation: true
 augmentation:
   random_flip: true
   random_crop: true
   random_rotation: true
-  color_jitter: true
   random_erasing: true
+  color_jitter: true

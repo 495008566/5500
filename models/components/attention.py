@@ -3,98 +3,129 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class SEModule(nn.Module):
-    """Squeeze-and-Excitation (SE) block implementation."""
+    """Squeeze-and-Excitation Module."""
     def __init__(self, channels, reduction=16):
         super(SEModule, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc1 = nn.Conv2d(channels, channels // reduction, kernel_size=1, padding=0)
-        self.relu = nn.ReLU(inplace=True)
-        self.fc2 = nn.Conv2d(channels // reduction, channels, kernel_size=1, padding=0)
-        self.sigmoid = nn.Sigmoid()
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        module_input = x
-        x = self.avg_pool(x)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.sigmoid(x)
-        return module_input * x
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
 
 class CBAM(nn.Module):
-    """Convolutional Block Attention Module."""
-    def __init__(self, channels, reduction=16):
+    """Enhanced Convolutional Block Attention Module with improved channel and spatial attention."""
+    def __init__(self, channels, reduction=8):  # Reduced ratio for more capacity
         super(CBAM, self).__init__()
-        # Channel attention
-        self.channel_gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
+        # Channel attention with both avg and max pooling paths
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        
+        # Shared MLP for channel attention
+        self.mlp = nn.Sequential(
             nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.BatchNorm2d(channels // reduction),  # Added batch normalization
             nn.ReLU(inplace=True),
-            nn.Conv2d(channels // reduction, channels, 1, bias=False),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False)
         )
-        # Spatial attention
+        
+        # Spatial attention with improved convolution
         self.spatial_gate = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=7, stride=1, padding=3, bias=False),
+            nn.Conv2d(2, 8, kernel_size=7, stride=1, padding=3, bias=False),  # Increased channels
+            nn.BatchNorm2d(8),  # Added batch normalization
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 1, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(1),
             nn.Sigmoid()
         )
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        # Channel attention
-        channel_att = self.channel_gate(x)
-        channel_att = self.sigmoid(channel_att)
+        # Channel attention with shared MLP
+        avg_out = self.mlp(self.avg_pool(x))
+        max_out = self.mlp(self.max_pool(x))
+        channel_att = self.sigmoid(avg_out + max_out)
         x = x * channel_att
         
         # Spatial attention
         avg_out = torch.mean(x, dim=1, keepdim=True)
         max_out, _ = torch.max(x, dim=1, keepdim=True)
-        spatial_input = torch.cat([avg_out, max_out], dim=1)
-        spatial_att = self.spatial_gate(spatial_input)
-        x = x * spatial_att
+        spatial = torch.cat([avg_out, max_out], dim=1)
+        spatial_att = self.spatial_gate(spatial)
         
-        return x
+        return x * spatial_att
 
 class ViewTransformationNetwork(nn.Module):
-    """Network for transforming features across different view angles."""
+    """Enhanced network for transforming features across different view angles with residual connections."""
     def __init__(self, feature_dim, view_angles):
         super(ViewTransformationNetwork, self).__init__()
         self.feature_dim = feature_dim
         self.view_angles = view_angles
         self.num_views = len(view_angles)
         
-        # Create transformation matrices for each view pair
+        # Create enhanced transformation modules for each view pair
         self.transforms = nn.ModuleDict()
         for i, src_view in enumerate(view_angles):
             for j, tgt_view in enumerate(view_angles):
                 if i != j:
                     key = f"{src_view}_{tgt_view}"
-                    self.transforms[key] = nn.Linear(feature_dim, feature_dim)
+                    # More powerful transformation with residual connection
+                    self.transforms[key] = nn.Sequential(
+                        nn.Linear(feature_dim, feature_dim * 2),
+                        nn.BatchNorm1d(feature_dim * 2),
+                        nn.ReLU(inplace=True),
+                        nn.Dropout(0.3),
+                        nn.Linear(feature_dim * 2, feature_dim),
+                        nn.BatchNorm1d(feature_dim)
+                    )
+        
+        # Global view-invariant feature extractor
+        self.global_transform = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim),
+            nn.BatchNorm1d(feature_dim),
+            nn.ReLU(inplace=True)
+        )
     
     def forward(self, features, src_view, tgt_view=None):
         """
-        Transform features from source view to target view.
+        Transform features from source view to target view with residual connections.
         If tgt_view is None, transform to all views.
         """
+        # Extract view-invariant features
+        global_features = self.global_transform(features)
+        
         if tgt_view is None:
             # Transform to all views
             transformed_features = []
             for view in self.view_angles:
                 if view != src_view:
                     key = f"{src_view}_{view}"
+                    # Apply transformation and add residual connection
                     transformed = self.transforms[key](features)
+                    # Add global features as a residual connection
+                    transformed = transformed + global_features
                     transformed_features.append(transformed)
                 else:
-                    transformed_features.append(features)
+                    # For same view, use original features + global features
+                    transformed_features.append(features + global_features)
             return torch.stack(transformed_features, dim=1)
         else:
             # Transform to specific target view
             if src_view == tgt_view:
-                return features
+                return features + global_features
             key = f"{src_view}_{tgt_view}"
-            return self.transforms[key](features)
+            transformed = self.transforms[key](features)
+            # Add global features as a residual connection
+            return transformed + global_features
 
 class DynamicWeightModule(nn.Module):
     """Module for dynamically weighting features from different body parts."""

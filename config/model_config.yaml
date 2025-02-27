@@ -1,22 +1,29 @@
-# Model configuration
+# Model configuration for gait recognition
 
 # Model architecture
 backbone: resnet50
-feature_dim: 256
+feature_dim: 2048  # Increased feature dimension for better representation
 num_classes: 125  # Default for CASIA-B
 
 # Feature extraction
 use_feature_pyramid: true
 use_attention: true
-attention_type: se  # 'se' or 'cbam'
+attention_type: cbam  # Using enhanced CBAM implementation
 
 # View transformation
 use_view_transform: true
 view_angles: [0, 18, 36, 54, 72, 90, 108, 126, 144, 162, 180]
 
 # Training parameters
-batch_size: 16
+batch_size: 16  # Reduced batch size for better stability
 num_workers: 4
-num_epochs: 10
-learning_rate: 0.001
-weight_decay: 0.0005
+num_epochs: 300
+learning_rate: 0.0001  # Lower learning rate for more stable training
+weight_decay: 0.001  # Increased weight decay for better regularization
+
+# Advanced options
+use_label_smoothing: true
+label_smoothing_factor: 0.1
+use_mixup: true
+mixup_alpha: 0.2
+use_hard_mining: true
